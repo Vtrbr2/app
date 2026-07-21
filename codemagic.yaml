@@ -16,4 +16,4 @@ workflows:
     publishing:
       email:
         recipients:
-          - seuemail@gmail.com
+           - ...
