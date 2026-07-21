@@ -1,19 +1,18 @@
 workflows:
-  expo-android:
-    name: Expo Android Build
+  android-build:
+    name: Android Build
+
+    working_directory: app
 
     environment:
       node: 20
 
     scripts:
       - npm install
-      - npx expo export --platform android
+      - npx expo prebuild --platform android
+      - cd android
+      - ./gradlew assembleRelease
 
     artifacts:
-      - android/**/*.apk
-      - android/**/*.aab
-
-    publishing:
-      email:
-        recipients:
-           - ...
+      - app/android/app/build/outputs/**/*.apk
+      - app/android/app/build/outputs/**/*.aab
