@@ -1,0 +1,19 @@
+workflows:
+  expo-android:
+    name: Expo Android Build
+
+    environment:
+      node: 20
+
+    scripts:
+      - npm install
+      - npx expo export --platform android
+
+    artifacts:
+      - android/**/*.apk
+      - android/**/*.aab
+
+    publishing:
+      email:
+        recipients:
+          - seuemail@gmail.com
