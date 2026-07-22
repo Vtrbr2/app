@@ -17,10 +17,22 @@ import { formatTime } from '../utils/helpers';
 
 const { width, height } = Dimensions.get('window');
 
+// 🔥 HEADERS EXATAMENTE IGUAIS AO DO NAVEGADOR
 const HEADERS_CDN = {
-  Origin: 'https://novelasflix.video',
-  Referer: 'https://novelasflix.video/',
-  'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36',
+  'Accept': '*/*',
+  'Accept-Encoding': 'gzip, deflate, br, zstd',
+  'Accept-Language': 'pt-BR,pt;q=0.7',
+  'Cache-Control': 'no-cache',
+  'Pragma': 'no-cache',
+  'Origin': 'https://novelasflix.video',
+  'Referer': 'https://novelasflix.video/',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+  'Sec-Ch-Ua': '"Not;A=Brand";v="8", "Chromium";v="150", "Brave";v="150"',
+  'Sec-Ch-Ua-Mobile': '?0',
+  'Sec-Ch-Ua-Platform': '"Windows"',
+  'Sec-Fetch-Dest': 'empty',
+  'Sec-Fetch-Mode': 'cors',
+  'Sec-Fetch-Site': 'same-origin',
 };
 
 export default function PlayerScreen({ route }) {
@@ -34,16 +46,12 @@ export default function PlayerScreen({ route }) {
   const [tempoAtual, setTempoAtual] = useState(0);
   const [mostrarControles, setMostrarControles] = useState(true);
   const [m3u8Url, setM3u8Url] = useState(null);
+  const [cookie, setCookie] = useState('');
 
   const videoRef = useRef(null);
   const hideTimerRef = useRef(null);
 
-  // 🔥 CONSTRÓI O ENDPOINT
-  const endpoint = tipo === 'episodio'
-    ? `${CONFIG.STREAM_API}/episodio/${categoria}/${slug}`
-    : `${CONFIG.STREAM_API}/filme-player/${categoria}/${slug}`;
-
-  // 🔥 BUSCA O M3U8 E USA A URL DA API DIRETAMENTE
+  // 🔥 PEGA O COOKIE E CONSTRÓI A URL DO M3U8
   useEffect(() => {
     async function carregarVideo() {
       try {
@@ -52,20 +60,45 @@ export default function PlayerScreen({ route }) {
         
         const authHeaders = await getAuthHeaders();
         
-        // 🔥 TESTA SE O ENDPOINT RETORNA O M3U8
+        console.log('📡 Buscando M3U8 para:', categoria, slug);
+        
+        // 🔥 1. CHAMA O ENDPOINT DO SERVIDOR PARA PEGAR O M3U8
+        const endpoint = tipo === 'episodio'
+          ? `${CONFIG.STREAM_API}/episodio/${categoria}/${slug}`
+          : `${CONFIG.STREAM_API}/filme-player/${categoria}/${slug}`;
+        
         const response = await fetch(endpoint, { headers: authHeaders });
         
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
         
-        // 🔥 USA A URL DO ENDPOINT COMO FONTE DO M3U8
-        // O react-native-video vai buscar o .m3u8 diretamente da API
+        const m3u8Texto = await response.text();
+        console.log('📄 M3U8 recebido, tamanho:', m3u8Texto.length);
+        
+        // 🔥 2. EXTRAI A PRIMEIRA URL .ts PARA PEGAR O DOMÍNIO
+        const tsUrls = m3u8Texto.match(/https?:\/\/[^\s]+\.ts/g) || [];
+        
+        if (tsUrls.length === 0) {
+          throw new Error('Nenhum segmento .ts encontrado');
+        }
+        
+        console.log('📹 Segmentos .ts:', tsUrls.length);
+        console.log('🔗 Primeiro segmento:', tsUrls[0]);
+        
+        // 🔥 3. USA A URL DO M3U8 QUE O SERVIDOR RETORNOU
+        // O servidor já reescreve as URLs para usar o proxy /api/segment
+        // Mas o player nativo precisa de uma URL HTTP direta
+        
+        // 🔥 4. CONSTRÓI A URL DO M3U8 COM O REFERER CORRETO
+        // O servidor já retorna o M3U8 com as URLs reescritas
+        // Vamos usar o endpoint do servidor como fonte
+        
         setM3u8Url(endpoint);
         setLoading(false);
         
       } catch (error) {
-        console.error('Erro ao carregar vídeo:', error);
+        console.error('❌ Erro:', error.message);
         setErro('Não foi possível carregar este vídeo.');
         setLoading(false);
       }
@@ -78,12 +111,10 @@ export default function PlayerScreen({ route }) {
       setLoading(false);
     }
     
-    return () => {
-      clearTimeout(hideTimerRef.current);
-    };
-  }, [categoria, slug, endpoint]);
+    return () => clearTimeout(hideTimerRef.current);
+  }, [categoria, slug, tipo]);
 
-  // 🔥 CONTROLES DE OCULTAÇÃO
+  // 🔥 OCULTAR CONTROLES
   useEffect(() => {
     clearTimeout(hideTimerRef.current);
     if (!pausado && !erro && !loading) {
@@ -100,9 +131,13 @@ export default function PlayerScreen({ route }) {
   const tentarNovamente = () => {
     setErro('');
     setLoading(true);
-    // Recarrega a URL
     setM3u8Url(null);
-    setTimeout(() => setM3u8Url(endpoint), 100);
+    setTimeout(() => {
+      const endpoint = tipo === 'episodio'
+        ? `${CONFIG.STREAM_API}/episodio/${categoria}/${slug}`
+        : `${CONFIG.STREAM_API}/filme-player/${categoria}/${slug}`;
+      setM3u8Url(endpoint);
+    }, 100);
   };
 
   const porcentagemProgresso = duracao > 0 ? (tempoAtual / duracao) * 100 : 0;
@@ -111,7 +146,7 @@ export default function PlayerScreen({ route }) {
     <View style={styles.container}>
       <StatusBar hidden />
 
-      {/* 🔥 PLAYER COM URL DA API */}
+      {/* 🔥 PLAYER COM URL DO M3U8 E HEADERS CORRETOS */}
       {m3u8Url && (
         <Video
           ref={videoRef}
@@ -120,6 +155,7 @@ export default function PlayerScreen({ route }) {
             type: 'm3u8',
             headers: {
               ...HEADERS_CDN,
+              'Referer': `https://novelasflix.video/${categoria}/${slug}/`,
             },
           }}
           style={styles.video}
@@ -127,10 +163,10 @@ export default function PlayerScreen({ route }) {
           resizeMode="contain"
           controls={false}
           onLoadStart={() => {
-            console.log('🔄 Video onLoadStart');
+            console.log('🔄 Video: onLoadStart - URL:', m3u8Url);
           }}
           onLoad={(data) => {
-            console.log('✅ Video onLoad:', data);
+            console.log('✅ Video: onLoad - Duração:', data.duration);
             setLoading(false);
             setErro('');
             setDuracao(data.duration || 0);
@@ -139,12 +175,12 @@ export default function PlayerScreen({ route }) {
             setTempoAtual(data.currentTime || 0);
           }}
           onError={(e) => {
-            console.error('❌ Erro no player:', e);
+            console.error('❌ Video: onError -', JSON.stringify(e));
             setLoading(false);
             setErro('Não foi possível reproduzir este vídeo agora.');
           }}
           onBuffer={({ isBuffering }) => {
-            console.log('📦 Buffering:', isBuffering);
+            console.log('📦 Buffer:', isBuffering);
           }}
           bufferConfig={{
             minBufferMs: 15000,
@@ -168,7 +204,7 @@ export default function PlayerScreen({ route }) {
           <MaterialCommunityIcons name="play-circle-outline" size={50} color="#E50914" />
           <Text style={styles.erroTitulo}>Não foi possível reproduzir</Text>
           <Text style={styles.erroTexto}>{erro}</Text>
-          <TouchableOpacity style={styles.botaoTentar} onPress={tentarNovamente} activeOpacity={0.8}>
+          <TouchableOpacity style={styles.botaoTentar} onPress={tentarNovamente}>
             <MaterialCommunityIcons name="reload" size={18} color="#000" />
             <Text style={styles.botaoTentarTexto}>Tentar novamente</Text>
           </TouchableOpacity>
@@ -178,14 +214,14 @@ export default function PlayerScreen({ route }) {
         </View>
       )}
 
-      {/* CONTROLES DO PLAYER */}
+      {/* CONTROLES */}
       {!erro && !loading && mostrarControles && m3u8Url && (
-        <View style={styles.controles} pointerEvents="box-none">
-          <TouchableOpacity style={styles.btnVoltar} onPress={() => navigation.goBack()} activeOpacity={0.7}>
+        <View style={styles.controles}>
+          <TouchableOpacity style={styles.btnVoltar} onPress={() => navigation.goBack()}>
             <MaterialCommunityIcons name="arrow-left" size={24} color="#fff" />
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.btnPlay} onPress={alternarPausa} activeOpacity={0.7}>
+          <TouchableOpacity style={styles.btnPlay} onPress={alternarPausa}>
             <MaterialCommunityIcons name={pausado ? 'play' : 'pause'} size={30} color="#fff" />
           </TouchableOpacity>
 
@@ -209,7 +245,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
   video: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   loadingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.8)' },
-  loadingText: { color: '#fff', marginTop: 10, fontSize: 14 },
+  loadingText: { color: '#fff', marginTop: 10 },
   erroOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.9)', padding: 20 },
   erroTitulo: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginTop: 12 },
   erroTexto: { color: '#aaa', fontSize: 14, textAlign: 'center', marginTop: 8 },
