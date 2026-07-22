@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -33,29 +33,64 @@ export default function PlayerScreen({ route }) {
   const [duracao, setDuracao] = useState(0);
   const [tempoAtual, setTempoAtual] = useState(0);
   const [mostrarControles, setMostrarControles] = useState(true);
-  const [authHeaders, setAuthHeaders] = useState({});
+  const [m3u8Url, setM3u8Url] = useState(null);
 
   const videoRef = useRef(null);
   const hideTimerRef = useRef(null);
 
-  // 🔥 CONSTRÓI A URL DO ENDPOINT
+  // 🔥 CONSTRÓI O ENDPOINT
   const endpoint = tipo === 'episodio'
     ? `${CONFIG.STREAM_API}/episodio/${categoria}/${slug}`
     : `${CONFIG.STREAM_API}/filme-player/${categoria}/${slug}`;
 
-  // 🔥 PEGA OS HEADERS DE AUTENTICAÇÃO
+  // 🔥 BUSCA O M3U8 E USA A URL DA API DIRETAMENTE
   useEffect(() => {
-    getAuthHeaders().then(headers => setAuthHeaders(headers));
-  }, []);
+    async function carregarVideo() {
+      try {
+        setLoading(true);
+        setErro('');
+        
+        const authHeaders = await getAuthHeaders();
+        
+        // 🔥 TESTA SE O ENDPOINT RETORNA O M3U8
+        const response = await fetch(endpoint, { headers: authHeaders });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        
+        // 🔥 USA A URL DO ENDPOINT COMO FONTE DO M3U8
+        // O react-native-video vai buscar o .m3u8 diretamente da API
+        setM3u8Url(endpoint);
+        setLoading(false);
+        
+      } catch (error) {
+        console.error('Erro ao carregar vídeo:', error);
+        setErro('Não foi possível carregar este vídeo.');
+        setLoading(false);
+      }
+    }
+    
+    if (categoria && slug) {
+      carregarVideo();
+    } else {
+      setErro('Dados do vídeo incompletos.');
+      setLoading(false);
+    }
+    
+    return () => {
+      clearTimeout(hideTimerRef.current);
+    };
+  }, [categoria, slug, endpoint]);
 
   // 🔥 CONTROLES DE OCULTAÇÃO
   useEffect(() => {
     clearTimeout(hideTimerRef.current);
-    if (!pausado && !erro) {
+    if (!pausado && !erro && !loading) {
       hideTimerRef.current = setTimeout(() => setMostrarControles(false), 4000);
     }
     return () => clearTimeout(hideTimerRef.current);
-  }, [pausado, erro]);
+  }, [pausado, erro, loading]);
 
   const alternarPausa = () => {
     setPausado(!pausado);
@@ -65,6 +100,9 @@ export default function PlayerScreen({ route }) {
   const tentarNovamente = () => {
     setErro('');
     setLoading(true);
+    // Recarrega a URL
+    setM3u8Url(null);
+    setTimeout(() => setM3u8Url(endpoint), 100);
   };
 
   const porcentagemProgresso = duracao > 0 ? (tempoAtual / duracao) * 100 : 0;
@@ -73,39 +111,48 @@ export default function PlayerScreen({ route }) {
     <View style={styles.container}>
       <StatusBar hidden />
 
-      {/* 🔥 PLAYER COM URL DIRETA, SEM ARQUIVO LOCAL */}
-      <Video
-        ref={videoRef}
-        source={{
-          uri: endpoint,
-          type: 'm3u8',
-          headers: {
-            ...HEADERS_CDN,
-            ...authHeaders,
-          },
-        }}
-        style={styles.video}
-        paused={pausado}
-        resizeMode="contain"
-        controls={false}
-        onLoadStart={() => setLoading(true)}
-        onLoad={(data) => {
-          setLoading(false);
-          setErro('');
-          setDuracao(data.duration || 0);
-        }}
-        onProgress={(data) => setTempoAtual(data.currentTime || 0)}
-        onError={(e) => {
-          console.error('Erro no player:', e);
-          setLoading(false);
-          setErro('Não foi possível reproduzir este vídeo agora.');
-        }}
-        bufferConfig={{
-          minBufferMs: 15000,
-          maxBufferMs: 50000,
-          bufferForPlaybackMs: 2500,
-        }}
-      />
+      {/* 🔥 PLAYER COM URL DA API */}
+      {m3u8Url && (
+        <Video
+          ref={videoRef}
+          source={{
+            uri: m3u8Url,
+            type: 'm3u8',
+            headers: {
+              ...HEADERS_CDN,
+            },
+          }}
+          style={styles.video}
+          paused={pausado}
+          resizeMode="contain"
+          controls={false}
+          onLoadStart={() => {
+            console.log('🔄 Video onLoadStart');
+          }}
+          onLoad={(data) => {
+            console.log('✅ Video onLoad:', data);
+            setLoading(false);
+            setErro('');
+            setDuracao(data.duration || 0);
+          }}
+          onProgress={(data) => {
+            setTempoAtual(data.currentTime || 0);
+          }}
+          onError={(e) => {
+            console.error('❌ Erro no player:', e);
+            setLoading(false);
+            setErro('Não foi possível reproduzir este vídeo agora.');
+          }}
+          onBuffer={({ isBuffering }) => {
+            console.log('📦 Buffering:', isBuffering);
+          }}
+          bufferConfig={{
+            minBufferMs: 15000,
+            maxBufferMs: 50000,
+            bufferForPlaybackMs: 2500,
+          }}
+        />
+      )}
 
       {/* LOADING */}
       {loading && !erro && (
@@ -121,23 +168,24 @@ export default function PlayerScreen({ route }) {
           <MaterialCommunityIcons name="play-circle-outline" size={50} color="#E50914" />
           <Text style={styles.erroTitulo}>Não foi possível reproduzir</Text>
           <Text style={styles.erroTexto}>{erro}</Text>
-          <TouchableOpacity style={styles.botaoTentar} onPress={tentarNovamente}>
+          <TouchableOpacity style={styles.botaoTentar} onPress={tentarNovamente} activeOpacity={0.8}>
+            <MaterialCommunityIcons name="reload" size={18} color="#000" />
             <Text style={styles.botaoTentarTexto}>Tentar novamente</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => navigation.goBack()}>
-            <Text style={styles.linkVoltar}>Voltar ao título</Text>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.linkVoltar}>
+            <Text style={styles.linkVoltarTexto}>Voltar ao título</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* CONTROLES */}
-      {!erro && mostrarControles && (
-        <View style={styles.controles}>
-          <TouchableOpacity style={styles.btnVoltar} onPress={() => navigation.goBack()}>
+      {/* CONTROLES DO PLAYER */}
+      {!erro && !loading && mostrarControles && m3u8Url && (
+        <View style={styles.controles} pointerEvents="box-none">
+          <TouchableOpacity style={styles.btnVoltar} onPress={() => navigation.goBack()} activeOpacity={0.7}>
             <MaterialCommunityIcons name="arrow-left" size={24} color="#fff" />
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.btnPlay} onPress={alternarPausa}>
+          <TouchableOpacity style={styles.btnPlay} onPress={alternarPausa} activeOpacity={0.7}>
             <MaterialCommunityIcons name={pausado ? 'play' : 'pause'} size={30} color="#fff" />
           </TouchableOpacity>
 
@@ -165,12 +213,13 @@ const styles = StyleSheet.create({
   erroOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.9)', padding: 20 },
   erroTitulo: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginTop: 12 },
   erroTexto: { color: '#aaa', fontSize: 14, textAlign: 'center', marginTop: 8 },
-  botaoTentar: { backgroundColor: '#fff', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8, marginTop: 20 },
-  botaoTentarTexto: { color: '#000', fontWeight: 'bold' },
-  linkVoltar: { color: '#aaa', marginTop: 12 },
+  botaoTentar: { backgroundColor: '#fff', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8, marginTop: 20, flexDirection: 'row', alignItems: 'center' },
+  botaoTentarTexto: { color: '#000', fontWeight: 'bold', marginLeft: 8 },
+  linkVoltar: { marginTop: 12 },
+  linkVoltarTexto: { color: '#aaa', fontSize: 14 },
   controles: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
-  btnVoltar: { position: 'absolute', top: 40, left: 16 },
-  btnPlay: { position: 'absolute', top: '50%', left: '50%', transform: [{ translateX: -25 }, { translateY: -25 }] },
+  btnVoltar: { position: 'absolute', top: 40, left: 16, zIndex: 10 },
+  btnPlay: { position: 'absolute', top: '50%', left: '50%', transform: [{ translateX: -25 }, { translateY: -25 }], zIndex: 10 },
   barraInferior: { position: 'absolute', bottom: 40, left: 20, right: 20 },
   progresso: { height: 4, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2 },
   trilha: { height: 4, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2 },
