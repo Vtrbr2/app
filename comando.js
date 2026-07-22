@@ -1,1 +1,0 @@
-npx expo install react-native-video expo-file-system @react-native-async-storage/async-storage expo-linear-gradient react-native-safe-area-context react-native-screens react-native-gesture-handler react-native-reanimated react-native-vector-icons @react-navigation/native @react-navigation/native-stack react-native-fast-image
