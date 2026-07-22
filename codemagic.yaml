@@ -13,5 +13,5 @@ workflows:
       - cd android && chmod +x gradlew && ./gradlew assembleRelease
 
     artifacts:
-      - app/android/app/build/outputs/**/*.apk
-      - app/android/app/build/outputs/**/*.aab
+      - android/app/build/outputs/**/*.apk
+      - android/app/build/outputs/**/*.aab
