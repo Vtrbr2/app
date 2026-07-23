@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import Video from 'react-native-video';
+import RNFS from 'react-native-fs'; // npm i react-native-fs (+ pod install no iOS)
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { getAuthHeaders } from '../services/api';
 import { CONFIG } from '../utils/constants';
@@ -17,7 +18,9 @@ import { formatTime } from '../utils/helpers';
 
 const { width, height } = Dimensions.get('window');
 
-// 🔥 HEADERS EXATAMENTE IGUAIS AO DO NAVEGADOR
+// Headers usados SOMENTE nas requisições que o player faz direto pro CDN
+// (segmentos .ts). NÃO servem e NÃO devem ser usados pra chamar seu próprio
+// STREAM_API — pra isso usamos getAuthHeaders().
 const HEADERS_CDN = {
   'Accept': '*/*',
   'Accept-Encoding': 'gzip, deflate, br, zstd',
@@ -45,76 +48,84 @@ export default function PlayerScreen({ route }) {
   const [duracao, setDuracao] = useState(0);
   const [tempoAtual, setTempoAtual] = useState(0);
   const [mostrarControles, setMostrarControles] = useState(true);
-  const [m3u8Url, setM3u8Url] = useState(null);
-  const [cookie, setCookie] = useState('');
+  const [m3u8Url, setM3u8Url] = useState(null); // agora é um file:// local, não a URL da API
 
   const videoRef = useRef(null);
   const hideTimerRef = useRef(null);
+  const tempFilePathRef = useRef(null);
 
-  // 🔥 PEGA O COOKIE E CONSTRÓI A URL DO M3U8
+  function getEndpoint() {
+    return tipo === 'episodio'
+      ? `${CONFIG.STREAM_API}/episodio/${categoria}/${slug}`
+      : `${CONFIG.STREAM_API}/filme-player/${categoria}/${slug}`;
+  }
+
+  // 🔥 ÚNICA requisição feita ao seu backend — e é autenticada.
+  // O conteúdo retornado (com as URLs .ts já assinadas/reescritas pelo
+  // servidor) é salvo localmente e é ISSO que o player vai consumir —
+  // sem precisar refazer nenhuma chamada sem auth.
+  async function baixarESalvarPlaylist() {
+    const authHeaders = await getAuthHeaders();
+    const endpoint = getEndpoint();
+
+    console.log('📡 Buscando M3U8 para:', categoria, slug);
+
+    const response = await fetch(endpoint, { headers: authHeaders });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const m3u8Texto = await response.text();
+    console.log('📄 M3U8 recebido, tamanho:', m3u8Texto.length);
+
+    const tsUrls = m3u8Texto.match(/https?:\/\/[^\s]+\.ts[^\s]*/g) || [];
+    if (tsUrls.length === 0) {
+      throw new Error('Nenhum segmento .ts encontrado');
+    }
+    console.log('📹 Segmentos .ts:', tsUrls.length);
+    console.log('🔗 Primeiro segmento:', tsUrls[0]);
+
+    const path = `${RNFS.CachesDirectoryPath}/playlist-${categoria}-${slug}-${Date.now()}.m3u8`;
+    await RNFS.writeFile(path, m3u8Texto, 'utf8');
+
+    // limpa o arquivo temporário anterior, se existir
+    if (tempFilePathRef.current) {
+      RNFS.unlink(tempFilePathRef.current).catch(() => {});
+    }
+    tempFilePathRef.current = path;
+
+    return `file://${path}`;
+  }
+
   useEffect(() => {
     async function carregarVideo() {
       try {
         setLoading(true);
         setErro('');
-        
-        const authHeaders = await getAuthHeaders();
-        
-        console.log('📡 Buscando M3U8 para:', categoria, slug);
-        
-        // 🔥 1. CHAMA O ENDPOINT DO SERVIDOR PARA PEGAR O M3U8
-        const endpoint = tipo === 'episodio'
-          ? `${CONFIG.STREAM_API}/episodio/${categoria}/${slug}`
-          : `${CONFIG.STREAM_API}/filme-player/${categoria}/${slug}`;
-        
-        const response = await fetch(endpoint, { headers: authHeaders });
-        
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        
-        const m3u8Texto = await response.text();
-        console.log('📄 M3U8 recebido, tamanho:', m3u8Texto.length);
-        
-        // 🔥 2. EXTRAI A PRIMEIRA URL .ts PARA PEGAR O DOMÍNIO
-        const tsUrls = m3u8Texto.match(/https?:\/\/[^\s]+\.ts/g) || [];
-        
-        if (tsUrls.length === 0) {
-          throw new Error('Nenhum segmento .ts encontrado');
-        }
-        
-        console.log('📹 Segmentos .ts:', tsUrls.length);
-        console.log('🔗 Primeiro segmento:', tsUrls[0]);
-        
-        // 🔥 3. USA A URL DO M3U8 QUE O SERVIDOR RETORNOU
-        // O servidor já reescreve as URLs para usar o proxy /api/segment
-        // Mas o player nativo precisa de uma URL HTTP direta
-        
-        // 🔥 4. CONSTRÓI A URL DO M3U8 COM O REFERER CORRETO
-        // O servidor já retorna o M3U8 com as URLs reescritas
-        // Vamos usar o endpoint do servidor como fonte
-        
-        setM3u8Url(endpoint);
-        setLoading(false);
-        
+        const localUri = await baixarESalvarPlaylist();
+        setM3u8Url(localUri);
       } catch (error) {
         console.error('❌ Erro:', error.message);
         setErro('Não foi possível carregar este vídeo.');
         setLoading(false);
       }
     }
-    
+
     if (categoria && slug) {
       carregarVideo();
     } else {
       setErro('Dados do vídeo incompletos.');
       setLoading(false);
     }
-    
-    return () => clearTimeout(hideTimerRef.current);
+
+    return () => {
+      clearTimeout(hideTimerRef.current);
+      if (tempFilePathRef.current) {
+        RNFS.unlink(tempFilePathRef.current).catch(() => {});
+      }
+    };
   }, [categoria, slug, tipo]);
 
-  // 🔥 OCULTAR CONTROLES
   useEffect(() => {
     clearTimeout(hideTimerRef.current);
     if (!pausado && !erro && !loading) {
@@ -128,16 +139,18 @@ export default function PlayerScreen({ route }) {
     setMostrarControles(true);
   };
 
-  const tentarNovamente = () => {
+  const tentarNovamente = async () => {
     setErro('');
     setLoading(true);
     setM3u8Url(null);
-    setTimeout(() => {
-      const endpoint = tipo === 'episodio'
-        ? `${CONFIG.STREAM_API}/episodio/${categoria}/${slug}`
-        : `${CONFIG.STREAM_API}/filme-player/${categoria}/${slug}`;
-      setM3u8Url(endpoint);
-    }, 100);
+    try {
+      const localUri = await baixarESalvarPlaylist();
+      setM3u8Url(localUri);
+    } catch (error) {
+      console.error('❌ Erro ao tentar novamente:', error.message);
+      setErro('Não foi possível carregar este vídeo.');
+      setLoading(false);
+    }
   };
 
   const porcentagemProgresso = duracao > 0 ? (tempoAtual / duracao) * 100 : 0;
@@ -146,7 +159,9 @@ export default function PlayerScreen({ route }) {
     <View style={styles.container}>
       <StatusBar hidden />
 
-      {/* 🔥 PLAYER COM URL DO M3U8 E HEADERS CORRETOS */}
+      {/* 🔥 A source agora é o arquivo m3u8 LOCAL (com URLs .ts já válidas/assinadas).
+          O player só precisa de headers pra buscar os segmentos direto no CDN —
+          não pra "revalidar" nada com o seu backend. */}
       {m3u8Url && (
         <Video
           ref={videoRef}
