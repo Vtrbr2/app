@@ -17,24 +17,6 @@ import { formatTime } from '../utils/helpers';
 
 const { width, height } = Dimensions.get('window');
 
-// Headers para o player nativo buscar os segmentos .ts
-const HEADERS_CDN = {
-  'Accept': '*/*',
-  'Accept-Encoding': 'gzip, deflate, br, zstd',
-  'Accept-Language': 'pt-BR,pt;q=0.7',
-  'Cache-Control': 'no-cache',
-  'Pragma': 'no-cache',
-  'Origin': 'https://novelasflix.video',
-  'Referer': 'https://novelasflix.video/',
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-  'Sec-Ch-Ua': '"Not;A=Brand";v="8", "Chromium";v="150", "Brave";v="150"',
-  'Sec-Ch-Ua-Mobile': '?0',
-  'Sec-Ch-Ua-Platform': '"Windows"',
-  'Sec-Fetch-Dest': 'empty',
-  'Sec-Fetch-Mode': 'cors',
-  'Sec-Fetch-Site': 'same-origin',
-};
-
 export default function PlayerScreen({ route }) {
   const navigation = useNavigation();
   const { categoria, slug, tipo = 'filme', titulo = 'TEDFLIX' } = route.params || {};
@@ -45,65 +27,58 @@ export default function PlayerScreen({ route }) {
   const [duracao, setDuracao] = useState(0);
   const [tempoAtual, setTempoAtual] = useState(0);
   const [mostrarControles, setMostrarControles] = useState(true);
-  const [m3u8Url, setM3u8Url] = useState(null);
+  const [videoUrl, setVideoUrl] = useState(null);
 
   const videoRef = useRef(null);
   const hideTimerRef = useRef(null);
 
-  // 🔥 CONSTRÓI A URL DO ENDPOINT
+  // 🔥 CONSTRÓI A URL DO M3U8 (É UMA URL HTTP!)
   const endpoint = tipo === 'episodio'
     ? `${CONFIG.STREAM_API}/episodio/${categoria}/${slug}`
     : `${CONFIG.STREAM_API}/filme-player/${categoria}/${slug}`;
 
-  // 🔥 USA A URL DO ENDPOINT DIRETAMENTE
   useEffect(() => {
     async function carregarVideo() {
       try {
         setLoading(true);
         setErro('');
-        
+
+        // 🔥 SÓ VERIFICA SE O ENDPOINT RESPONDE (OPCIONAL)
         const authHeaders = await getAuthHeaders();
-        
-        console.log('📡 Buscando M3U8 para:', categoria, slug);
-        console.log('🔗 Endpoint:', endpoint);
-        
-        // 🔥 TESTA SE O ENDPOINT RETORNA O M3U8
         const response = await fetch(endpoint, { headers: authHeaders });
-        
+
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
-        
+
         const m3u8Texto = await response.text();
-        console.log('📄 M3U8 recebido, tamanho:', m3u8Texto.length);
-        
-        // 🔥 VERIFICA SE TEM URLs .ts
         const tsUrls = m3u8Texto.match(/https?:\/\/[^\s]+\.ts/g) || [];
-        console.log('📹 Segmentos .ts:', tsUrls.length);
-        
+
         if (tsUrls.length === 0) {
           throw new Error('Nenhum segmento .ts encontrado');
         }
-        
-        // 🔥 USA A URL DO ENDPOINT COMO FONTE DO M3U8
-        // O react-native-video vai fazer a requisição HTTP para o .m3u8
-        setM3u8Url(endpoint);
+
+        console.log(`📹 ${tsUrls.length} segmentos encontrados.`);
+
+        // 🔥 PASSA A URL DO ENDPOINT DIRETO PARA O PLAYER
+        // O react-native-video VAI BAIXAR O .M3U8 VIA HTTP
+        setVideoUrl(endpoint);
         setLoading(false);
-        
+
       } catch (error) {
         console.error('❌ Erro:', error.message);
         setErro('Não foi possível carregar este vídeo.');
         setLoading(false);
       }
     }
-    
+
     if (categoria && slug) {
       carregarVideo();
     } else {
       setErro('Dados do vídeo incompletos.');
       setLoading(false);
     }
-    
+
     return () => clearTimeout(hideTimerRef.current);
   }, [categoria, slug, endpoint]);
 
@@ -124,8 +99,8 @@ export default function PlayerScreen({ route }) {
   const tentarNovamente = () => {
     setErro('');
     setLoading(true);
-    setM3u8Url(null);
-    setTimeout(() => setM3u8Url(endpoint), 100);
+    setVideoUrl(null);
+    setTimeout(() => setVideoUrl(endpoint), 100);
   };
 
   const porcentagemProgresso = duracao > 0 ? (tempoAtual / duracao) * 100 : 0;
@@ -134,42 +109,37 @@ export default function PlayerScreen({ route }) {
     <View style={styles.container}>
       <StatusBar hidden />
 
-      {/* 🔥 PLAYER COM URL DO M3U8 (REMOTA) */}
-      {m3u8Url && (
+      {videoUrl && (
         <Video
           ref={videoRef}
           source={{
-            uri: m3u8Url,
+            uri: videoUrl,
             type: 'm3u8',
             headers: {
-              ...HEADERS_CDN,
               'Referer': `https://novelasflix.video/${categoria}/${slug}/`,
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'Origin': 'https://novelasflix.video',
+              'Accept': '*/*',
             },
           }}
           style={styles.video}
           paused={pausado}
           resizeMode="contain"
           controls={false}
-          onLoadStart={() => {
-            console.log('🔄 Video: onLoadStart');
-          }}
+          onLoadStart={() => console.log('🔄 Video: onLoadStart')}
           onLoad={(data) => {
             console.log('✅ Video: onLoad - Duração:', data.duration);
             setLoading(false);
             setErro('');
             setDuracao(data.duration || 0);
           }}
-          onProgress={(data) => {
-            setTempoAtual(data.currentTime || 0);
-          }}
+          onProgress={(data) => setTempoAtual(data.currentTime || 0)}
           onError={(e) => {
             console.error('❌ Video: onError -', JSON.stringify(e));
             setLoading(false);
             setErro('Não foi possível reproduzir este vídeo agora.');
           }}
-          onBuffer={({ isBuffering }) => {
-            console.log('📦 Buffer:', isBuffering);
-          }}
+          onBuffer={({ isBuffering }) => console.log('📦 Buffer:', isBuffering)}
           bufferConfig={{
             minBufferMs: 15000,
             maxBufferMs: 50000,
@@ -203,7 +173,7 @@ export default function PlayerScreen({ route }) {
       )}
 
       {/* CONTROLES */}
-      {!erro && !loading && mostrarControles && m3u8Url && (
+      {!erro && !loading && mostrarControles && videoUrl && (
         <View style={styles.controles}>
           <TouchableOpacity style={styles.btnVoltar} onPress={() => navigation.goBack()}>
             <MaterialCommunityIcons name="arrow-left" size={24} color="#fff" />
