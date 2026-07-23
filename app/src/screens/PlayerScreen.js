@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import Video from 'react-native-video';
-import RNFS from 'react-native-fs'; // npm i react-native-fs (+ pod install no iOS)
+import * as FileSystem from 'expo-file-system';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { getAuthHeaders } from '../services/api';
 import { CONFIG } from '../utils/constants';
@@ -18,6 +18,7 @@ import { formatTime } from '../utils/helpers';
 
 const { width, height } = Dimensions.get('window');
 
+// (react-native-fs foi trocado por expo-file-system, já presente no projeto Expo)
 // Headers usados SOMENTE nas requisições que o player faz direto pro CDN
 // (segmentos .ts). NÃO servem e NÃO devem ser usados pra chamar seu próprio
 // STREAM_API — pra isso usamos getAuthHeaders().
@@ -85,16 +86,19 @@ export default function PlayerScreen({ route }) {
     console.log('📹 Segmentos .ts:', tsUrls.length);
     console.log('🔗 Primeiro segmento:', tsUrls[0]);
 
-    const path = `${RNFS.CachesDirectoryPath}/playlist-${categoria}-${slug}-${Date.now()}.m3u8`;
-    await RNFS.writeFile(path, m3u8Texto, 'utf8');
+    const path = `${FileSystem.cacheDirectory}playlist-${categoria}-${slug}-${Date.now()}.m3u8`;
+    await FileSystem.writeAsStringAsync(path, m3u8Texto, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
 
     // limpa o arquivo temporário anterior, se existir
     if (tempFilePathRef.current) {
-      RNFS.unlink(tempFilePathRef.current).catch(() => {});
+      FileSystem.deleteAsync(tempFilePathRef.current, { idempotent: true }).catch(() => {});
     }
     tempFilePathRef.current = path;
 
-    return `file://${path}`;
+    // FileSystem.cacheDirectory já vem no formato file://...
+    return path;
   }
 
   useEffect(() => {
@@ -121,7 +125,7 @@ export default function PlayerScreen({ route }) {
     return () => {
       clearTimeout(hideTimerRef.current);
       if (tempFilePathRef.current) {
-        RNFS.unlink(tempFilePathRef.current).catch(() => {});
+        FileSystem.deleteAsync(tempFilePathRef.current, { idempotent: true }).catch(() => {});
       }
     };
   }, [categoria, slug, tipo]);
