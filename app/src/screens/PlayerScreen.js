@@ -10,7 +10,6 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import Video from 'react-native-video';
-import * as FileSystem from 'expo-file-system';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { getAuthHeaders } from '../services/api';
 import { CONFIG } from '../utils/constants';
@@ -18,10 +17,7 @@ import { formatTime } from '../utils/helpers';
 
 const { width, height } = Dimensions.get('window');
 
-// (react-native-fs foi trocado por expo-file-system, já presente no projeto Expo)
-// Headers usados SOMENTE nas requisições que o player faz direto pro CDN
-// (segmentos .ts). NÃO servem e NÃO devem ser usados pra chamar seu próprio
-// STREAM_API — pra isso usamos getAuthHeaders().
+// Headers para o player nativo buscar os segmentos .ts
 const HEADERS_CDN = {
   'Accept': '*/*',
   'Accept-Encoding': 'gzip, deflate, br, zstd',
@@ -49,87 +45,69 @@ export default function PlayerScreen({ route }) {
   const [duracao, setDuracao] = useState(0);
   const [tempoAtual, setTempoAtual] = useState(0);
   const [mostrarControles, setMostrarControles] = useState(true);
-  const [m3u8Url, setM3u8Url] = useState(null); // agora é um file:// local, não a URL da API
+  const [m3u8Url, setM3u8Url] = useState(null);
 
   const videoRef = useRef(null);
   const hideTimerRef = useRef(null);
-  const tempFilePathRef = useRef(null);
 
-  function getEndpoint() {
-    return tipo === 'episodio'
-      ? `${CONFIG.STREAM_API}/episodio/${categoria}/${slug}`
-      : `${CONFIG.STREAM_API}/filme-player/${categoria}/${slug}`;
-  }
+  // 🔥 CONSTRÓI A URL DO ENDPOINT
+  const endpoint = tipo === 'episodio'
+    ? `${CONFIG.STREAM_API}/episodio/${categoria}/${slug}`
+    : `${CONFIG.STREAM_API}/filme-player/${categoria}/${slug}`;
 
-  // 🔥 ÚNICA requisição feita ao seu backend — e é autenticada.
-  // O conteúdo retornado (com as URLs .ts já assinadas/reescritas pelo
-  // servidor) é salvo localmente e é ISSO que o player vai consumir —
-  // sem precisar refazer nenhuma chamada sem auth.
-  async function baixarESalvarPlaylist() {
-    const authHeaders = await getAuthHeaders();
-    const endpoint = getEndpoint();
-
-    console.log('📡 Buscando M3U8 para:', categoria, slug);
-
-    const response = await fetch(endpoint, { headers: authHeaders });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const m3u8Texto = await response.text();
-    console.log('📄 M3U8 recebido, tamanho:', m3u8Texto.length);
-
-    const tsUrls = m3u8Texto.match(/https?:\/\/[^\s]+\.ts[^\s]*/g) || [];
-    if (tsUrls.length === 0) {
-      throw new Error('Nenhum segmento .ts encontrado');
-    }
-    console.log('📹 Segmentos .ts:', tsUrls.length);
-    console.log('🔗 Primeiro segmento:', tsUrls[0]);
-
-    const path = `${FileSystem.cacheDirectory}playlist-${categoria}-${slug}-${Date.now()}.m3u8`;
-    await FileSystem.writeAsStringAsync(path, m3u8Texto, {
-      encoding: FileSystem.EncodingType.UTF8,
-    });
-
-    // limpa o arquivo temporário anterior, se existir
-    if (tempFilePathRef.current) {
-      FileSystem.deleteAsync(tempFilePathRef.current, { idempotent: true }).catch(() => {});
-    }
-    tempFilePathRef.current = path;
-
-    // FileSystem.cacheDirectory já vem no formato file://...
-    return path;
-  }
-
+  // 🔥 USA A URL DO ENDPOINT DIRETAMENTE
   useEffect(() => {
     async function carregarVideo() {
       try {
         setLoading(true);
         setErro('');
-        const localUri = await baixarESalvarPlaylist();
-        setM3u8Url(localUri);
+        
+        const authHeaders = await getAuthHeaders();
+        
+        console.log('📡 Buscando M3U8 para:', categoria, slug);
+        console.log('🔗 Endpoint:', endpoint);
+        
+        // 🔥 TESTA SE O ENDPOINT RETORNA O M3U8
+        const response = await fetch(endpoint, { headers: authHeaders });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const m3u8Texto = await response.text();
+        console.log('📄 M3U8 recebido, tamanho:', m3u8Texto.length);
+        
+        // 🔥 VERIFICA SE TEM URLs .ts
+        const tsUrls = m3u8Texto.match(/https?:\/\/[^\s]+\.ts/g) || [];
+        console.log('📹 Segmentos .ts:', tsUrls.length);
+        
+        if (tsUrls.length === 0) {
+          throw new Error('Nenhum segmento .ts encontrado');
+        }
+        
+        // 🔥 USA A URL DO ENDPOINT COMO FONTE DO M3U8
+        // O react-native-video vai fazer a requisição HTTP para o .m3u8
+        setM3u8Url(endpoint);
+        setLoading(false);
+        
       } catch (error) {
         console.error('❌ Erro:', error.message);
         setErro('Não foi possível carregar este vídeo.');
         setLoading(false);
       }
     }
-
+    
     if (categoria && slug) {
       carregarVideo();
     } else {
       setErro('Dados do vídeo incompletos.');
       setLoading(false);
     }
+    
+    return () => clearTimeout(hideTimerRef.current);
+  }, [categoria, slug, endpoint]);
 
-    return () => {
-      clearTimeout(hideTimerRef.current);
-      if (tempFilePathRef.current) {
-        FileSystem.deleteAsync(tempFilePathRef.current, { idempotent: true }).catch(() => {});
-      }
-    };
-  }, [categoria, slug, tipo]);
-
+  // 🔥 OCULTAR CONTROLES
   useEffect(() => {
     clearTimeout(hideTimerRef.current);
     if (!pausado && !erro && !loading) {
@@ -143,18 +121,11 @@ export default function PlayerScreen({ route }) {
     setMostrarControles(true);
   };
 
-  const tentarNovamente = async () => {
+  const tentarNovamente = () => {
     setErro('');
     setLoading(true);
     setM3u8Url(null);
-    try {
-      const localUri = await baixarESalvarPlaylist();
-      setM3u8Url(localUri);
-    } catch (error) {
-      console.error('❌ Erro ao tentar novamente:', error.message);
-      setErro('Não foi possível carregar este vídeo.');
-      setLoading(false);
-    }
+    setTimeout(() => setM3u8Url(endpoint), 100);
   };
 
   const porcentagemProgresso = duracao > 0 ? (tempoAtual / duracao) * 100 : 0;
@@ -163,9 +134,7 @@ export default function PlayerScreen({ route }) {
     <View style={styles.container}>
       <StatusBar hidden />
 
-      {/* 🔥 A source agora é o arquivo m3u8 LOCAL (com URLs .ts já válidas/assinadas).
-          O player só precisa de headers pra buscar os segmentos direto no CDN —
-          não pra "revalidar" nada com o seu backend. */}
+      {/* 🔥 PLAYER COM URL DO M3U8 (REMOTA) */}
       {m3u8Url && (
         <Video
           ref={videoRef}
@@ -182,7 +151,7 @@ export default function PlayerScreen({ route }) {
           resizeMode="contain"
           controls={false}
           onLoadStart={() => {
-            console.log('🔄 Video: onLoadStart - URL:', m3u8Url);
+            console.log('🔄 Video: onLoadStart');
           }}
           onLoad={(data) => {
             console.log('✅ Video: onLoad - Duração:', data.duration);
@@ -264,7 +233,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
   video: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   loadingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.8)' },
-  loadingText: { color: '#fff', marginTop: 10 },
+  loadingText: { color: '#fff', marginTop: 10, fontSize: 14 },
   erroOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.9)', padding: 20 },
   erroTitulo: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginTop: 12 },
   erroTexto: { color: '#aaa', fontSize: 14, textAlign: 'center', marginTop: 8 },
